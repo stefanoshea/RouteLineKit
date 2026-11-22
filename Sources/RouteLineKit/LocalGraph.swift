@@ -391,9 +391,8 @@ struct LocalGraph {
         let edges = zip(points, points.dropFirst()).map { (start: $0, delta: $1 - $0) }.filter { $0.delta.length > 0 }
         let lengths = edges.map { $0.delta.length }
         let length = lengths.reduce(0, +)
-        guard let first = points.first, let last = points.last, length > 0 else {
-            return Array(repeating: points[0], count: steps + 1)
-        }
+        guard let first = points.first, let last = points.last else { return [] }
+        guard length > 0 else { return Array(repeating: first, count: steps + 1) }
         var sampled = [first]
         var edge = 0
         var covered = 0.0

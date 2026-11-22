@@ -116,7 +116,15 @@ struct AppleWalkingPaths: Sendable {
                 let gap = Self.point(start).distance(to: Self.point(end))
                 if (2...60).contains(gap) {
                     remainingRepairs -= 1
-                    let connector = try? await lookup(start, end)
+                    let connector: [Coordinate]?
+                    do {
+                        connector = try await lookup(start, end)
+                    } catch WalkingRouteError.serviceBusy {
+                        remainingRepairs = 0
+                        connector = nil
+                    } catch {
+                        connector = nil
+                    }
                     try Task.checkCancellation()
                     if let connector, Self.isSupportedConnector(
                         connector, from: start, to: end, gap: gap, near: anchorIndices[index], drawing: drawing)
@@ -145,7 +153,7 @@ struct AppleWalkingPaths: Sendable {
     }
 
     private static func anchorIndices(for stroke: [Coordinate]) throws -> [Int] {
-        guard (2...12_000).contains(stroke.count), stroke.allSatisfy(isValid),
+        guard (2...StrokeMatcher.maximumObservations).contains(stroke.count), stroke.allSatisfy(isValid),
             let first = stroke.first
         else { throw WalkingRouteError.unsupportedDrawing }
 

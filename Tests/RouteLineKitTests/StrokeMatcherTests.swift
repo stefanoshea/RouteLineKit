@@ -198,14 +198,16 @@ func followsDistinctTurnsUnderACoherentTouchOffset(retrace: Bool) {
     #expect(matcher.resolve(turn) == .freehand(turn))
 }
 
-@Test func resolvesALongerStrokeInBoundedConnectedWindows() {
-    let nodes = (0...32).map { node(Int64($0), Double($0 * 100), 0) }
+@Test(arguments: [3_200, 4_820])
+func resolvesALongerStrokeInBoundedConnectedWindows(length: Int) {
+    let positions = Array(stride(from: 0, to: length, by: 100)) + [length]
+    let nodes = positions.map { node(Int64($0), Double($0), 0) }
     let matcher = StrokeMatcher(nodes: nodes, ways: [Way(id: 1, nodeIDs: nodes.map(\.id))])
     let stroke = nodes.map(\.coordinate)
     let route = matcher.resolve(stroke)
     #expect(matcher.match(stroke) == nil)
     #expect(route.segments.allSatisfy { $0.kind == .snapped })
-    #expect(abs(route.distanceMeters - 3_200) < 0.01)
+    #expect(abs(route.distanceMeters - Double(length)) < 0.01)
     #expect(route.segments.first?.coordinates.first == stroke.first)
     #expect(route.segments.last?.coordinates.last == stroke.last)
 }
@@ -242,6 +244,34 @@ func followsDistinctTurnsUnderACoherentTouchOffset(retrace: Bool) {
     let drawn = ResolvedStroke.freehand(polar + [Coordinate(latitude: .nan, longitude: 1)] + polar.reversed())
     #expect(drawn.segments.map(\.kind) == [.freehand, .freehand])
     #expect(drawn.segments.first?.coordinates == polar)
+}
+
+@Test func measuresFreehandDistanceSymmetricallyNearThePole() {
+    let first = Coordinate(latitude: 89, longitude: 0)
+    let last = Coordinate(latitude: 80, longitude: 180)
+    let forward = ResolvedStroke.freehand([first, last])
+    let reverse = ResolvedStroke.freehand([last, first])
+    // The shortest arc across the north pole spans 11 degrees.
+    #expect(abs(forward.distanceMeters - 1_223_144.19) < 0.01)
+    #expect(forward.distanceMeters == reverse.distanceMeters)
+}
+
+@Test func measuresShortFreehandDistancesAcrossTheAntimeridian() {
+    let first = Coordinate(latitude: 0, longitude: 179.999_999_99)
+    let last = Coordinate(latitude: 0, longitude: -179.999_999_99)
+    let route = ResolvedStroke.freehand([first, last])
+    #expect(route.segments.first?.coordinates == [first, last])
+    #expect(abs(route.distanceMeters - 0.002_224) < 0.000_001)
+}
+
+@Test func retainsRoadSupportInAShortFinalFallbackWindow() {
+    let matcher = StrokeMatcher(
+        nodes: [node(1, 400, 0), node(2, 2416, 0)], ways: [Way(id: 1, nodeIDs: [1, 2])])
+    let drawing = [coordinate(0, 0)] + stride(from: 400, through: 2416, by: 8).map { coordinate(Double($0), 0) }
+    #expect(matcher.match(drawing) == nil)
+    let result = matcher.resolve(drawing)
+    #expect(result.segments.map(\.kind) == [.freehand, .snapped])
+    #expect(abs(result.snappedDistanceMeters - 2016) < 0.01)
 }
 
 @Test func keepsSeparatelyResolvedSectionsContinuousWithoutClaimingAStreetAtTheSeam() throws {

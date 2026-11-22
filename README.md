@@ -22,12 +22,12 @@ Run **Product → Test** on an iPhone simulator to verify drawing, gap repair, p
 
 ## Quick start
 
-In Xcode, choose **File → Add Package Dependencies**, enter `https://github.com/stefanoshea/RouteLineKit.git`, and choose **Up to Next Minor Version** starting at `0.1.1`. Add the `RouteLineKit` library to your target. The package requires Swift 6.2 or later and targets iOS 26 and macOS 26.
+In Xcode, choose **File → Add Package Dependencies**, enter `https://github.com/stefanoshea/RouteLineKit.git`, and choose **Up to Next Minor Version** starting at `0.1.2`. Add the `RouteLineKit` library to your target. The package requires Swift 6.2 or later and targets iOS 26 and macOS 26.
 
 In a `Package.swift` manifest, add this entry to `dependencies` and link `.product(name: "RouteLineKit", package: "RouteLineKit")` in your target’s dependencies.
 
 ```swift
-.package(url: "https://github.com/stefanoshea/RouteLineKit.git", .upToNextMinor(from: "0.1.1"))
+.package(url: "https://github.com/stefanoshea/RouteLineKit.git", .upToNextMinor(from: "0.1.2"))
 ```
 
 Pass the coordinates captured from the drawing, in order. RouteLineKit fetches the walking paths from Apple Maps and compares them with the sketch. A lookup can throw if directions are unavailable or the drawing cannot be matched.

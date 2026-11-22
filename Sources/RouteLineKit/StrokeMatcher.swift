@@ -15,6 +15,8 @@ public struct Match: Sendable, Equatable {
 /// Matches one local stroke to caller-supplied, bidirectional graph geometry.
 /// Supply only ways eligible for the activity. The matcher has no access or turn rules.
 public struct StrokeMatcher: Sendable {
+    static let maximumObservations = 12_000
+
     private let nodes: [Int64: Coordinate]
     private let ways: [Way]
 
@@ -35,9 +37,12 @@ public struct StrokeMatcher: Sendable {
 
     /// Returns a connected match or nil for an invalid or weakly supported stroke.
     /// The current heuristic accepts local strokes from 8 m to 2.5 km, with no input gap over 250 m.
+    /// Strokes may contain up to 12,000 observations.
     /// Confidence thresholds describe geometric agreement and do not identify the user's intended way.
     public func match(_ stroke: [Coordinate]) -> Match? {
-        guard !ways.isEmpty, let origin = stroke.first, stroke.allSatisfy(\.isValid) else { return nil }
+        guard !ways.isEmpty, stroke.count <= Self.maximumObservations,
+            let origin = stroke.first, stroke.allSatisfy(\.isValid)
+        else { return nil }
         let projection = LocalProjection(origin: origin)
         let observed = stroke.map(projection.project)
         guard let sampled = Self.resample(observed) else { return nil }
@@ -51,44 +56,85 @@ public struct StrokeMatcher: Sendable {
     }
 
     /// Resolves one drawing into ordered road-aligned and freehand portions.
+    /// Road matching accepts drawings from 8 m to 12 km, with up to 12,000 observations and
+    /// latitudes within ±85°. Drawings outside these limits fall back to freehand portions.
     public func resolve(_ stroke: [Coordinate]) -> ResolvedStroke {
         StrokeResolution(nodes: nodes, ways: ways).resolve(stroke)
     }
 
     static func resample(_ points: [Point], preservingReversals: Bool = false) -> [Point]? {
         guard let first = points.first, let last = points.last else { return nil }
-        let lengths = zip(points, points.dropFirst()).map { ($1 - $0).length }
-        let length = lengths.reduce(0, +)
-        guard (8...2_500).contains(length), lengths.allSatisfy({ $0 <= 250 }) else { return nil }
+        var distances = [0.0]
+        distances.reserveCapacity(points.count)
+        var length = 0.0
+        for (previous, next) in zip(points, points.dropFirst()) {
+            let gap = (next - previous).length
+            guard gap <= 250 else { return nil }
+            length += gap
+            distances.append(length)
+        }
+        guard (8...2_500).contains(length) else { return nil }
 
         let intervals = Int(ceil(length / 9))
-        var targets = (1..<intervals).map { length * Double($0) / Double(intervals) }
-        if preservingReversals {
-            var distance = 0.0
-            for index in points.indices.dropFirst().dropLast() {
-                distance += lengths[index - 1]
-                let incoming = points[index] - points[index - 1]
-                let outgoing = points[index + 1] - points[index]
-                guard min(incoming.length, outgoing.length) >= 4,
-                    incoming.dot(outgoing) < -0.8 * incoming.length * outgoing.length
-                else { continue }
-                targets.removeAll { abs($0 - distance) < 2 }
-                targets.append(distance)
-            }
-            targets.sort()
-        }
+        let reversals = preservingReversals ? reversalDistances(points, distances: distances, length: length) : []
         var output = [first]
         var segment = 0
-        var traversed = 0.0
-        for target in targets {
-            while traversed + lengths[segment] < target {
-                traversed += lengths[segment]
-                segment += 1
+        var reversalIndex = 0
+        for interval in 1..<intervals {
+            let target = length * Double(interval) / Double(intervals)
+            while reversalIndex < reversals.count, reversals[reversalIndex] <= target {
+                output.append(point(at: reversals[reversalIndex], in: points, distances: distances, segment: &segment))
+                reversalIndex += 1
             }
-            let portion = (target - traversed) / lengths[segment]
-            output.append(points[segment] + (points[segment + 1] - points[segment]) * portion)
+            if reversalIndex > 0, target - reversals[reversalIndex - 1] < 2 { continue }
+            if reversalIndex < reversals.count, reversals[reversalIndex] - target < 2 { continue }
+            output.append(point(at: target, in: points, distances: distances, segment: &segment))
+        }
+        for reversal in reversals[reversalIndex...] {
+            output.append(point(at: reversal, in: points, distances: distances, segment: &segment))
         }
         output.append(last)
         return output
+    }
+
+    private static func reversalDistances(_ points: [Point], distances: [Double], length: Double) -> [Double] {
+        let chordSpan = 4.0
+        var beforeSegment = 0
+        var afterSegment = 0
+        var reversals: [Double] = []
+        var lastCandidate = -Double.infinity
+        var bestSupport = 0.0
+        for (index, distance) in distances.enumerated() {
+            guard distance >= chordSpan, distance <= length - chordSpan else { continue }
+            let before = point(at: distance - chordSpan, in: points, distances: distances, segment: &beforeSegment)
+            let after = point(at: distance + chordSpan, in: points, distances: distances, segment: &afterSegment)
+            let incoming = points[index] - before
+            let outgoing = after - points[index]
+            let support = min(incoming.length, outgoing.length)
+            guard support >= chordSpan / 2,
+                incoming.dot(outgoing) < -0.8 * incoming.length * outgoing.length
+            else { continue }
+
+            // Nearby vertices can describe the same reversal in a densely sampled stroke.
+            if distance - lastCandidate >= 2 {
+                reversals.append(distance)
+                bestSupport = support
+            } else if support > bestSupport {
+                reversals[reversals.count - 1] = distance
+                bestSupport = support
+            }
+            lastCandidate = distance
+        }
+        return reversals
+    }
+
+    private static func point(at target: Double, in points: [Point], distances: [Double], segment: inout Int) -> Point {
+        while segment + 1 < points.count - 1, distances[segment + 1] < target {
+            segment += 1
+        }
+        if target <= distances[segment] { return points[segment] }
+        if target >= distances[segment + 1] { return points[segment + 1] }
+        let portion = (target - distances[segment]) / (distances[segment + 1] - distances[segment])
+        return points[segment] + (points[segment + 1] - points[segment]) * portion
     }
 }

@@ -52,13 +52,13 @@
         public override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
             guard activeTouch == nil, let touch = touches.first else { return }
             activeTouch = touch
-            onBegan?()
             let point = touch.location(in: self)
             points = [point]
             path = CGMutablePath()
             path.move(to: point)
             startDot.position = point
             startDot.isHidden = false
+            onBegan?()
         }
 
         public override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {

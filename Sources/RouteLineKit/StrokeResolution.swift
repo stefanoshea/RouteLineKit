@@ -50,7 +50,6 @@ struct StrokeResolution {
     private static let maximumWindowLength = 2_400.0
     private static let maximumStrokeLength = 12_000.0
     private static let maximumPartialSearches = 48
-    private static let maximumObservations = 12_000
     private static let maximumRepairLength = 360.0
     private static let maximumRepairAttempts = 12
     private static let maximumOpenEndRepairLength = 80.0
@@ -59,7 +58,7 @@ struct StrokeResolution {
     let ways: [Way]
 
     func resolve(_ stroke: [Coordinate]) -> ResolvedStroke {
-        guard let origin = stroke.first, stroke.count >= 2, stroke.count <= Self.maximumObservations,
+        guard let origin = stroke.first, stroke.count >= 2, stroke.count <= StrokeMatcher.maximumObservations,
             !ways.isEmpty, stroke.allSatisfy(\.isValid)
         else { return .freehand(stroke) }
         let projection = LocalProjection(origin: origin)
@@ -104,6 +103,13 @@ struct StrokeResolution {
             var windowEnd = windowStart + 1
             while windowEnd < probes.count - 1 && arcs[windowEnd + 1] - arcs[windowStart] <= Self.maximumWindowLength {
                 windowEnd += 1
+            }
+            let last = probes.count - 1
+            // The normal window leaves room below the resampling limit for a short final remainder.
+            if arcs[last] - arcs[windowEnd] < Self.minimumSupportedRun,
+                arcs[last] - arcs[windowStart] <= Self.maximumWindowLength + Self.minimumSupportedRun
+            {
+                windowEnd = last
             }
             let window = windowStart...windowEnd
             let graph = LocalGraph(nodes: nodes, ways: ways, projection: projection, stroke: Array(probes[window]))
@@ -260,10 +266,23 @@ struct StrokeResolution {
     fileprivate static func freehandSegment(_ coordinates: [Coordinate]) -> StrokeSegment? {
         guard coordinates.count >= 2 else { return nil }
         let length = zip(coordinates, coordinates.dropFirst()).reduce(0.0) { distance, pair in
-            distance + LocalProjection(origin: pair.0).project(pair.1).length
+            distance + greatCircleDistance(from: pair.0, to: pair.1)
         }
         guard length > 1e-6 else { return nil }
         return StrokeSegment(kind: .freehand, coordinates: coordinates, distanceMeters: length)
+    }
+
+    private static func greatCircleDistance(from start: Coordinate, to end: Coordinate) -> Double {
+        let radiansPerDegree = Double.pi / 180
+        let latitudeDifference = (end.latitude - start.latitude) * radiansPerDegree
+        let longitudeDifference = abs(end.longitude - start.longitude)
+        let wrappedLongitude = min(longitudeDifference, 360 - longitudeDifference)
+        let latitudeTerm = sin(latitudeDifference / 2)
+        let longitudeTerm = sin(wrappedLongitude * radiansPerDegree / 2)
+        let latitudeScales = cos(start.latitude * radiansPerDegree) * cos(end.latitude * radiansPerDegree)
+        let haversine = min(1, max(0, latitudeTerm * latitudeTerm + latitudeScales * longitudeTerm * longitudeTerm))
+        let earthRadiusMeters = 6_371_000.0
+        return 2 * earthRadiusMeters * atan2(sqrt(haversine), sqrt(1 - haversine))
     }
 
     private static func snappedSegment(

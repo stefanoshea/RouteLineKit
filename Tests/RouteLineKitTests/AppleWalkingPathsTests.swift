@@ -109,6 +109,38 @@ final class AppleWalkingPathsTests: XCTestCase {
         XCTAssertFalse(route.segments.flatMap(\.coordinates).contains(detour))
     }
 
+    func testStopsRepairingGapsAfterThrottlingAndKeepsSuccessfulLegs() async throws {
+        actor RepairAttempts {
+            var count = 0
+
+            func record() { count += 1 }
+        }
+
+        let start = coordinate(x: 0, y: 0)
+        let firstCorner = coordinate(x: 100, y: 0)
+        let secondCorner = coordinate(x: 100, y: 100)
+        let end = coordinate(x: 0, y: 100)
+        let firstLegEnd = coordinate(x: 80, y: 0)
+        let middleLegStart = coordinate(x: 100, y: 20)
+        let middleLegEnd = coordinate(x: 100, y: 80)
+        let lastLegStart = coordinate(x: 80, y: 100)
+        let attempts = RepairAttempts()
+        let paths = AppleWalkingPaths { source, destination in
+            if source == start && destination == firstCorner { return [start, firstLegEnd] }
+            if source == firstCorner && destination == secondCorner { return [middleLegStart, middleLegEnd] }
+            if source == secondCorner && destination == end { return [lastLegStart, end] }
+            await attempts.record()
+            if source == firstLegEnd && destination == middleLegStart { throw WalkingRouteError.serviceBusy }
+            return [middleLegEnd, secondCorner, lastLegStart]
+        }
+
+        let route = try await paths.resolve([start, firstCorner, secondCorner, end])
+        let repairCount = await attempts.count
+        XCTAssertEqual(repairCount, 1)
+        XCTAssertEqual(route.segments.map(\.kind), [.snapped, .freehand, .snapped, .freehand, .snapped])
+        XCTAssertGreaterThan(route.snappedDistanceMeters, 200)
+    }
+
     func testKeepsSupportedApproachesWhenAnImpreciseCornerIsFarFromBothLegs() async throws {
         let start = coordinate(x: 0, y: 0)
         let approach = coordinate(x: 70, y: 0)

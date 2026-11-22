@@ -8,6 +8,7 @@ struct PlannerMap: UIViewRepresentable {
     let drawingRevision: Int
     let route: ResolvedStroke?
     let location: CLLocation?
+    let onStrokeBegan: () -> Void
     let onStroke: ([Coordinate]) -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -48,6 +49,7 @@ struct PlannerMap: UIViewRepresentable {
         let map = surface.map
         let drawing = surface.drawing
         let coordinator = context.coordinator
+        drawing.onBegan = onStrokeBegan
         drawing.onEnded = { [weak drawing, weak map] points in
             guard let drawing, let map else { return }
             let coordinates = points.map { Coordinate(map.convert($0, toCoordinateFrom: drawing)) }

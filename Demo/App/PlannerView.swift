@@ -87,7 +87,7 @@ struct PlannerView: View {
     private var map: some View {
         PlannerMap(
             isDrawing: mode == .draw, drawingRevision: drawingRevision,
-            route: displayedRoute, location: location.position
+            route: displayedRoute, location: location.position, onStrokeBegan: cancelMatch
         ) { samples in
             completeStroke(samples)
         }
@@ -365,12 +365,8 @@ struct PlannerView: View {
             do {
                 let result = try await walkingRoute(for: samples)
                 try Task.checkCancellation()
-                if result.snappedDistanceMeters > 0 {
-                    match = result
-                    showingDrawing = false
-                } else {
-                    matchMessage = "No nearby paths matched. Your drawing is still on the map."
-                }
+                match = result
+                showingDrawing = false
             } catch {
                 guard !Task.isCancelled else { return }
                 matchMessage = (error as? LocalizedError)?.errorDescription
