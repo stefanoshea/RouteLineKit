@@ -1,13 +1,16 @@
 import MapKit
 import RouteLineKit
 import XCTest
-@testable import RouteLineDemo
 
 final class LivePathLookupTests: XCTestCase {
     /// Checks that a small finger offset still matches a public walk on current Apple Maps.
     @MainActor
     func testWalkingRouteInHydePark() async throws {
-        try XCTSkipUnless(ProcessInfo.processInfo.environment["ROUTELINE_LIVE_LOOKUP"] == "1")
+        let environment = ProcessInfo.processInfo.environment
+        try XCTSkipUnless(
+            environment["ROUTELINE_LIVE_LOOKUP"] == "1"
+                || environment["TEST_RUNNER_ROUTELINE_LIVE_LOOKUP"] == "1"
+        )
 
         let request = MKDirections.Request()
         request.source = MKMapItem(location: CLLocation(latitude: -33.8710, longitude: 151.2118), address: nil)
@@ -21,7 +24,7 @@ final class LivePathLookupTests: XCTestCase {
         let drawing = points.enumerated().map { index, point in
             Coordinate(latitude: point.latitude + sin(Double(index)) * 0.000035, longitude: point.longitude)
         }
-        let resolved = try await AppleWalkingPaths().resolve(drawing)
+        let resolved = try await RouteLineKit.walkingRoute(for: drawing)
         XCTAssertGreaterThan(resolved.snappedDistanceMeters, path.distance * 0.7)
         XCTAssertLessThan(resolved.distanceMeters, path.distance * 1.3)
     }

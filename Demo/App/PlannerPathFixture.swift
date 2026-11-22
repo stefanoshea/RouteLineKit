@@ -1,6 +1,6 @@
 #if DEBUG && targetEnvironment(simulator)
     import Foundation
-    import RouteLineKit
+    @_spi(Testing) import RouteLineKit
 
     enum PlannerPathFixture {
         // An invented right-angle graph for the UI tests. Its second leg starts
@@ -19,11 +19,15 @@
             canConnect || ProcessInfo.processInfo.environment["ROUTELINE_UI_TEST_APPLE_GAP"] == "1"
         }
 
-        static func leg(from source: Coordinate, to destination: Coordinate) async throws -> [Coordinate] {
+        static func walkingRoute(for samples: [Coordinate]) async throws -> ResolvedStroke {
+            try await RouteLineKit.walkingRoute(for: samples, lookup: leg)
+        }
+
+        private static func leg(from source: Coordinate, to destination: Coordinate) -> [Coordinate] {
             if source == start && destination == corner { return [start, corner] }
             if source == corner && destination == end { return [afterCorner, end] }
             if canConnect && source == corner && destination == afterCorner { return [corner, afterCorner] }
-            throw AppleWalkingPaths.LookupError.noWalkingRoute
+            return []
         }
     }
 #endif

@@ -1,6 +1,48 @@
+#if canImport(MapKit)
 import Foundation
 import MapKit
-import RouteLineKit
+
+/// Describes a drawing or Apple Maps lookup that could not produce a route.
+public enum WalkingRouteError: LocalizedError, Equatable {
+    case unsupportedDrawing
+    case serviceUnavailable
+    case serviceBusy
+    case noWalkingRoute
+    case doesNotFollowDrawing
+
+    public var errorDescription: String? {
+        switch self {
+        case .unsupportedDrawing:
+            "Apple walking directions can match a continuous drawing between 15 m and 2.4 km."
+        case .serviceUnavailable:
+            "Apple walking directions are unavailable right now."
+        case .serviceBusy:
+            "Apple walking directions are busy. Wait a moment before trying again."
+        case .noWalkingRoute:
+            "Apple Maps couldn’t find walking directions near the drawing."
+        case .doesNotFollowDrawing:
+            "Apple walking directions didn’t follow your drawing closely enough."
+        }
+    }
+}
+
+/// Uses Apple Maps walking directions to match a continuous drawing between 15 m and 2.4 km.
+/// Sections without sufficient support can remain freehand in the returned route.
+/// Throws a `WalkingRouteError` for an unsuccessful lookup or `CancellationError` on cancellation.
+@concurrent
+public func walkingRoute(for drawing: [Coordinate]) async throws -> ResolvedStroke {
+    try await AppleWalkingPaths().resolve(drawing)
+}
+
+#if DEBUG && targetEnvironment(simulator)
+@_spi(Testing)
+@concurrent
+public func walkingRoute(
+    for drawing: [Coordinate], lookup: @escaping @Sendable (Coordinate, Coordinate) async throws -> [Coordinate]
+) async throws -> ResolvedStroke {
+    try await AppleWalkingPaths(lookup: lookup).resolve(drawing)
+}
+#endif
 
 struct AppleWalkingPaths: Sendable {
     @MainActor
@@ -17,29 +59,6 @@ struct AppleWalkingPaths: Sendable {
 
         func cancel() {
             directions.cancel()
-        }
-    }
-
-    enum LookupError: LocalizedError, Equatable {
-        case unsupportedDrawing
-        case serviceUnavailable
-        case serviceBusy
-        case noWalkingRoute
-        case doesNotFollowDrawing
-
-        var errorDescription: String? {
-            switch self {
-            case .unsupportedDrawing:
-                "Apple walking directions can match a continuous drawing between 15 m and 2.4 km."
-            case .serviceUnavailable:
-                "Apple walking directions are unavailable right now. Your drawing is still on the map."
-            case .serviceBusy:
-                "Apple walking directions are busy. Wait a moment before trying again."
-            case .noWalkingRoute:
-                "Apple Maps couldn’t find walking directions near the drawing."
-            case .doesNotFollowDrawing:
-                "Apple walking directions didn’t follow your drawing closely enough. Your drawing is still on the map."
-            }
         }
     }
 
@@ -64,7 +83,7 @@ struct AppleWalkingPaths: Sendable {
             try Task.checkCancellation()
             guard (2...3_000).contains(leg.count), coordinateCount + leg.count <= 6_000,
                 leg.allSatisfy(Self.isValid), leg.dropFirst().contains(where: { $0 != leg[0] })
-            else { throw LookupError.noWalkingRoute }
+            else { throw WalkingRouteError.noWalkingRoute }
             legs.append(leg)
             coordinateCount += leg.count
         }
@@ -116,7 +135,7 @@ struct AppleWalkingPaths: Sendable {
         let route = matcher.resolve(stroke)
         try Task.checkCancellation()
         guard route.snappedDistanceMeters > 0 else {
-            throw LookupError.doesNotFollowDrawing
+            throw WalkingRouteError.doesNotFollowDrawing
         }
         return route
     }
@@ -128,7 +147,7 @@ struct AppleWalkingPaths: Sendable {
     private static func anchorIndices(for stroke: [Coordinate]) throws -> [Int] {
         guard (2...12_000).contains(stroke.count), stroke.allSatisfy(isValid),
             let first = stroke.first
-        else { throw LookupError.unsupportedDrawing }
+        else { throw WalkingRouteError.unsupportedDrawing }
 
         let points = stroke.map(point)
         let scale = MKMetersPerMapPointAtLatitude(first.latitude)
@@ -136,12 +155,12 @@ struct AppleWalkingPaths: Sendable {
         for (start, end) in zip(points, points.dropFirst()) {
             let length = start.distance(to: end)
             guard length <= 245, abs(end.x - start.x) * scale <= 245 else {
-                throw LookupError.unsupportedDrawing
+                throw WalkingRouteError.unsupportedDrawing
             }
             lengths.append(lengths[lengths.count - 1] + length)
         }
         guard let length = lengths.last, (15...2_400).contains(length) else {
-            throw LookupError.unsupportedDrawing
+            throw WalkingRouteError.unsupportedDrawing
         }
 
         // Insert the strongest remaining corner until it is straight enough or four requests are needed.
@@ -166,7 +185,7 @@ struct AppleWalkingPaths: Sendable {
 
         let anchors = indices.map { stroke[$0] }
         guard zip(anchors, anchors.dropFirst()).allSatisfy({ point($0).distance(to: point($1)) >= 8 }) else {
-            throw LookupError.unsupportedDrawing
+            throw WalkingRouteError.unsupportedDrawing
         }
         return indices
     }
@@ -229,7 +248,7 @@ struct AppleWalkingPaths: Sendable {
             }
             try Task.checkCancellation()
             guard let line = response.routes.first?.polyline, (2...3_000).contains(line.pointCount) else {
-                throw LookupError.noWalkingRoute
+                throw WalkingRouteError.noWalkingRoute
             }
             var coordinates = Array(repeating: CLLocationCoordinate2D(), count: line.pointCount)
             line.getCoordinates(&coordinates, range: NSRange(location: 0, length: line.pointCount))
@@ -237,10 +256,10 @@ struct AppleWalkingPaths: Sendable {
         } catch {
             try Task.checkCancellation()
             switch error {
-            case let lookupError as LookupError: throw lookupError
-            case let mapError as MKError where mapError.code == .loadingThrottled: throw LookupError.serviceBusy
-            case let mapError as MKError where mapError.code == .directionsNotFound: throw LookupError.noWalkingRoute
-            default: throw LookupError.serviceUnavailable
+            case let lookupError as WalkingRouteError: throw lookupError
+            case let mapError as MKError where mapError.code == .loadingThrottled: throw WalkingRouteError.serviceBusy
+            case let mapError as MKError where mapError.code == .directionsNotFound: throw WalkingRouteError.noWalkingRoute
+            default: throw WalkingRouteError.serviceUnavailable
             }
         }
     }
@@ -267,3 +286,4 @@ struct AppleWalkingPaths: Sendable {
         return hypot(point.x - (start.x + fraction * dx), point.y - (start.y + fraction * dy))
     }
 }
+#endif

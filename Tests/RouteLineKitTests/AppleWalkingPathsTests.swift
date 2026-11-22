@@ -1,7 +1,7 @@
+#if canImport(MapKit)
 import Foundation
-import RouteLineKit
 import XCTest
-@testable import RouteLineDemo
+@testable import RouteLineKit
 
 final class AppleWalkingPathsTests: XCTestCase {
     func testOrderedAnchorsAndConnectedLegsFollowTheDrawing() async throws {
@@ -43,7 +43,7 @@ final class AppleWalkingPathsTests: XCTestCase {
         do {
             _ = try await paths.resolve(stroke)
             XCTFail("The direct route has no support along the three drawn sides.")
-        } catch let error as AppleWalkingPaths.LookupError {
+        } catch let error as WalkingRouteError {
             XCTAssertEqual(error, .doesNotFollowDrawing)
         }
     }
@@ -80,7 +80,7 @@ final class AppleWalkingPathsTests: XCTestCase {
             if source == start && destination == corner { return [start, beforeCorner] }
             if source == corner && destination == end { return [afterCorner, end] }
             if source == beforeCorner && destination == afterCorner { return [roundedStart, corner, roundedEnd] }
-            throw AppleWalkingPaths.LookupError.noWalkingRoute
+            throw WalkingRouteError.noWalkingRoute
         }
 
         let route = try await paths.resolve([start, corner, end])
@@ -100,7 +100,7 @@ final class AppleWalkingPathsTests: XCTestCase {
             if source == start && destination == corner { return [start, beforeCorner] }
             if source == corner && destination == end { return [afterCorner, end] }
             if source == beforeCorner && destination == afterCorner { return [beforeCorner, detour, afterCorner] }
-            throw AppleWalkingPaths.LookupError.noWalkingRoute
+            throw WalkingRouteError.noWalkingRoute
         }
 
         let route = try await paths.resolve([start, corner, end])
@@ -157,7 +157,7 @@ final class AppleWalkingPathsTests: XCTestCase {
             [Coordinate(latitude: 0, longitude: 179.9999), Coordinate(latitude: 0, longitude: -179.9999)],
         ] {
             XCTAssertThrowsError(try AppleWalkingPaths.anchors(for: stroke)) {
-                XCTAssertEqual($0 as? AppleWalkingPaths.LookupError, .unsupportedDrawing)
+                XCTAssertEqual($0 as? WalkingRouteError, .unsupportedDrawing)
             }
         }
     }
@@ -166,3 +166,4 @@ final class AppleWalkingPathsTests: XCTestCase {
         Coordinate(latitude: y / 111_195, longitude: x / 111_195)
     }
 }
+#endif

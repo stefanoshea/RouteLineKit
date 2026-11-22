@@ -363,7 +363,7 @@ struct PlannerView: View {
         matchMessage = nil
         matchTask = Task {
             do {
-                let result = try await walkingPaths.resolve(samples)
+                let result = try await walkingRoute(for: samples)
                 try Task.checkCancellation()
                 if result.snappedDistanceMeters > 0 {
                     match = result
@@ -380,12 +380,12 @@ struct PlannerView: View {
         }
     }
 
-    private var walkingPaths: AppleWalkingPaths {
+    private func walkingRoute(for samples: [Coordinate]) async throws -> ResolvedStroke {
         #if DEBUG && targetEnvironment(simulator)
             if PlannerPathFixture.preloadsDrawing {
-                return AppleWalkingPaths(lookup: PlannerPathFixture.leg)
+                return try await PlannerPathFixture.walkingRoute(for: samples)
             }
         #endif
-        return AppleWalkingPaths()
+        return try await RouteLineKit.walkingRoute(for: samples)
     }
 }
