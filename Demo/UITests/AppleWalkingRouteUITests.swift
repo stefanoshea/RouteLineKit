@@ -88,7 +88,11 @@ final class AppleWalkingRouteUITests: XCTestCase {
 
     func testLiveAppleWalkingRouteFromHydeParkGesture() throws {
         #if targetEnvironment(simulator)
-        try XCTSkipUnless(ProcessInfo.processInfo.environment["ROUTELINE_LIVE_LOOKUP"] == "1")
+        let environment = ProcessInfo.processInfo.environment
+        try XCTSkipUnless(
+            environment["ROUTELINE_LIVE_LOOKUP"] == "1"
+                || environment["TEST_RUNNER_ROUTELINE_LIVE_LOOKUP"] == "1"
+        )
         let app = XCUIApplication()
         app.launchEnvironment["ROUTELINE_UI_TEST_APPLE_VIEWPORT"] = "1"
         app.launch()

@@ -1,7 +1,7 @@
 import Foundation
 
-public struct StrokeSegment: Sendable, Equatable {
-    public enum Kind: Sendable, Equatable {
+public struct StrokeSegment: Sendable, Hashable {
+    public enum Kind: Sendable, Hashable {
         case snapped
         /// A wider adjustment or a nearby parallel path makes the selected geometry uncertain.
         case approximate
@@ -11,10 +11,21 @@ public struct StrokeSegment: Sendable, Equatable {
     public let kind: Kind
     public let coordinates: [Coordinate]
     public let distanceMeters: Double
+
+    public init(kind: Kind, coordinates: [Coordinate], distanceMeters: Double) {
+        self.kind = kind
+        self.coordinates = coordinates
+        self.distanceMeters = distanceMeters
+    }
 }
 
-public struct ResolvedStroke: Sendable, Equatable {
+public struct ResolvedStroke: Sendable, Hashable {
     public let segments: [StrokeSegment]
+
+    public init(segments: [StrokeSegment]) {
+        self.segments = segments
+    }
+
     public var distanceMeters: Double { segments.reduce(0) { $0 + $1.distanceMeters } }
     public var snappedDistanceMeters: Double {
         segments.reduce(0) { $0 + ($1.kind == .freehand ? 0 : $1.distanceMeters) }
@@ -57,7 +68,7 @@ struct StrokeResolution {
     let nodes: [Int64: Coordinate]
     let ways: [Way]
 
-    func resolve(_ stroke: [Coordinate]) -> ResolvedStroke {
+    func resolve(_ stroke: [Coordinate], shouldCancel: () -> Bool = { false }) -> ResolvedStroke {
         guard let origin = stroke.first, stroke.count >= 2, stroke.count <= StrokeMatcher.maximumObservations,
             !ways.isEmpty, stroke.allSatisfy(\.isValid)
         else { return .freehand(stroke) }
@@ -65,11 +76,13 @@ struct StrokeResolution {
         let observed = stroke.map(projection.project)
         let lengths = zip(observed, observed.dropFirst()).map { ($1 - $0).length }
         let length = lengths.reduce(0, +)
-        guard (8...Self.maximumStrokeLength).contains(length) else { return .freehand(stroke) }
+        guard (8...Self.maximumStrokeLength).contains(length), !shouldCancel() else { return .freehand(stroke) }
+        let projectedNodes = nodes.filter { $0.value.isValid }.mapValues(projection.project)
 
         if let sampled = StrokeMatcher.resample(observed) {
-            let graph = LocalGraph(nodes: nodes, ways: ways, projection: projection, stroke: sampled)
+            let graph = LocalGraph(projectedNodes: projectedNodes, ways: ways, stroke: sampled)
             let route = graph.match(sampled, observations: observed)
+            if shouldCancel() { return .freehand(stroke) }
             if let alternative = graph.matchCoherentlyShifted(sampled, observations: observed, baseline: route) {
                 return ResolvedStroke(segments: [
                     Self.snappedSegment(alternative, projection: projection, kind: .approximate)
@@ -100,6 +113,7 @@ struct StrokeResolution {
         var remainingSearches = Self.maximumPartialSearches
         var windowStart = 0
         while windowStart < probes.count - 1 && remainingSearches > 0 {
+            if shouldCancel() { return .freehand(stroke) }
             var windowEnd = windowStart + 1
             while windowEnd < probes.count - 1 && arcs[windowEnd + 1] - arcs[windowStart] <= Self.maximumWindowLength {
                 windowEnd += 1
@@ -112,11 +126,11 @@ struct StrokeResolution {
                 windowEnd = last
             }
             let window = windowStart...windowEnd
-            let graph = LocalGraph(nodes: nodes, ways: ways, projection: projection, stroke: Array(probes[window]))
+            let graph = LocalGraph(projectedNodes: projectedNodes, ways: ways, stroke: Array(probes[window]))
 
             func matchSupportedRun(_ run: ClosedRange<Int>) {
                 let length = arcs[run.upperBound] - arcs[run.lowerBound]
-                guard length >= Self.minimumSupportedRun, remainingSearches > 0,
+                guard !shouldCancel(), length >= Self.minimumSupportedRun, remainingSearches > 0,
                     let sampled = StrokeMatcher.resample(Array(probes[run]))
                 else { return }
                 remainingSearches -= 1
@@ -157,6 +171,7 @@ struct StrokeResolution {
             windowStart = windowEnd
         }
 
+        if shouldCancel() { return .freehand(stroke) }
         guard !accepted.isEmpty else { return .freehand(stroke) }
         var segments: [StrokeSegment] = []
         var cursor = 0
@@ -172,7 +187,7 @@ struct StrokeResolution {
                 zip(points, points.dropFirst()).reduce(0.0, { $0 + ($1.1 - $1.0).length })
                     <= Self.maximumOpenEndRepairLength
             else { return nil }
-            let graph = LocalGraph(nodes: nodes, ways: ways, projection: projection, stroke: points + [anchor.point])
+            let graph = LocalGraph(projectedNodes: projectedNodes, ways: ways, stroke: points + [anchor.point])
             guard let connector = graph.extend(from: anchor, following: points, atStart: atStart) else { return nil }
             return StrokeSegment(
                 kind: .approximate, coordinates: connector.points.map(projection.unproject),
@@ -180,6 +195,7 @@ struct StrokeResolution {
         }
 
         for (indices, route, kind) in accepted {
+            if shouldCancel() { return .freehand(stroke) }
             let snapped = Self.snappedSegment(route, projection: projection, kind: kind)
             var freehand: [Coordinate] = []
             if indices.lowerBound > cursor {
@@ -198,7 +214,7 @@ struct StrokeResolution {
                     repairAttempts += 1
                     let drawn = Array(probes[cursor...indices.lowerBound])
                     let graph = LocalGraph(
-                        nodes: nodes, ways: ways, projection: projection,
+                        projectedNodes: projectedNodes, ways: ways,
                         stroke: [priorRoute.end.point, route.start.point] + drawn)
                     // Even a same-sample seam can separate independently selected edges.
                     if let connector = graph.connect(

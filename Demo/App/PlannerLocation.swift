@@ -67,7 +67,9 @@ final class PlannerLocation: NSObject, @preconcurrency CLLocationManagerDelegate
 
     private func acceptLocations(_ locations: [CLLocation]) {
         guard isLocating else { return }
-        if let location = locations.last(where: { $0.horizontalAccuracy >= 0 }) {
+        if let location = locations.last(where: {
+            CLLocationCoordinate2DIsValid($0.coordinate) && $0.horizontalAccuracy >= 0
+        }) {
             position = location
             finish()
         } else {

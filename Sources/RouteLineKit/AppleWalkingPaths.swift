@@ -3,7 +3,7 @@ import Foundation
 import MapKit
 
 /// Describes a drawing or Apple Maps lookup that could not produce a route.
-public enum WalkingRouteError: LocalizedError, Equatable {
+public enum WalkingRouteError: LocalizedError, Hashable {
     case unsupportedDrawing
     case serviceUnavailable
     case serviceBusy
@@ -48,16 +48,19 @@ struct AppleWalkingPaths: Sendable {
     @MainActor
     private final class DirectionsRequest {
         let directions: MKDirections
+        private var isCancelled = false
 
         init(_ request: MKDirections.Request) {
             directions = MKDirections(request: request)
         }
 
         func calculate() async throws -> MKDirections.Response {
-            try await directions.calculate()
+            if isCancelled { throw CancellationError() }
+            return try await directions.calculate()
         }
 
         func cancel() {
+            isCancelled = true
             directions.cancel()
         }
     }
@@ -82,7 +85,7 @@ struct AppleWalkingPaths: Sendable {
             let leg = try await lookup(source, destination)
             try Task.checkCancellation()
             guard (2...3_000).contains(leg.count), coordinateCount + leg.count <= 6_000,
-                leg.allSatisfy(Self.isValid), leg.dropFirst().contains(where: { $0 != leg[0] })
+                leg.allSatisfy(\.isValid), leg.dropFirst().contains(where: { $0 != leg[0] })
             else { throw WalkingRouteError.noWalkingRoute }
             legs.append(leg)
             coordinateCount += leg.count
@@ -140,7 +143,7 @@ struct AppleWalkingPaths: Sendable {
         }
 
         let matcher = StrokeMatcher(nodes: nodes, ways: ways)
-        let route = matcher.resolve(stroke)
+        let route = matcher.resolve(stroke, shouldCancel: { Task.isCancelled })
         try Task.checkCancellation()
         guard route.snappedDistanceMeters > 0 else {
             throw WalkingRouteError.doesNotFollowDrawing
@@ -153,7 +156,7 @@ struct AppleWalkingPaths: Sendable {
     }
 
     private static func anchorIndices(for stroke: [Coordinate]) throws -> [Int] {
-        guard (2...StrokeMatcher.maximumObservations).contains(stroke.count), stroke.allSatisfy(isValid),
+        guard (2...StrokeMatcher.maximumObservations).contains(stroke.count), stroke.allSatisfy(\.isValid),
             let first = stroke.first
         else { throw WalkingRouteError.unsupportedDrawing }
 
@@ -202,7 +205,7 @@ struct AppleWalkingPaths: Sendable {
         _ connector: [Coordinate], from start: Coordinate, to end: Coordinate, gap: Double,
         near anchor: Int, drawing: [MKMapPoint]
     ) -> Bool {
-        guard (2...128).contains(connector.count), connector.allSatisfy(isValid),
+        guard (2...128).contains(connector.count), connector.allSatisfy(\.isValid),
             let first = connector.first, let last = connector.last,
             point(start).distance(to: point(first)) <= endpointTolerance,
             point(end).distance(to: point(last)) <= endpointTolerance
@@ -278,10 +281,6 @@ struct AppleWalkingPaths: Sendable {
 
     private static func point(_ coordinate: Coordinate) -> MKMapPoint {
         MKMapPoint(coordinate.mapCoordinate)
-    }
-
-    private static func isValid(_ coordinate: Coordinate) -> Bool {
-        (-85...85).contains(coordinate.latitude) && (-180...180).contains(coordinate.longitude)
     }
 
     private static func chordDeviation(_ point: MKMapPoint, from start: MKMapPoint, to end: MKMapPoint) -> Double {

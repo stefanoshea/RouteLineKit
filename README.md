@@ -22,12 +22,12 @@ Run **Product → Test** on an iPhone simulator to verify drawing, gap repair, p
 
 ## Quick start
 
-In Xcode, choose **File → Add Package Dependencies**, enter `https://github.com/stefanoshea/RouteLineKit.git`, and choose **Up to Next Minor Version** starting at `0.1.2`. Add the `RouteLineKit` library to your target. The package requires Swift 6.2 or later and targets iOS 26 and macOS 26.
+In Xcode, choose **File → Add Package Dependencies**, enter `https://github.com/stefanoshea/RouteLineKit.git`, and choose **Up to Next Minor Version** starting at `0.2.0`. Add the `RouteLineKit` library to your target. The package requires Swift 6.2 or later and targets iOS 26 and macOS 26.
 
 In a `Package.swift` manifest, add this entry to `dependencies` and link `.product(name: "RouteLineKit", package: "RouteLineKit")` in your target’s dependencies.
 
 ```swift
-.package(url: "https://github.com/stefanoshea/RouteLineKit.git", .upToNextMinor(from: "0.1.2"))
+.package(url: "https://github.com/stefanoshea/RouteLineKit.git", .upToNextMinor(from: "0.2.0"))
 ```
 
 Pass the coordinates captured from the drawing, in order. RouteLineKit fetches the walking paths from Apple Maps and compares them with the sketch. A lookup can throw if directions are unavailable or the drawing cannot be matched.
@@ -42,7 +42,7 @@ func matchDrawing(_ drawing: [Coordinate]) async throws -> ResolvedStroke {
 
 Each returned section has ordered coordinates, a distance in metres, and a kind. Use `.snapped` for a matched path, `.approximate` for a suggested path, and `.freehand` for an unmatched part of the original line. The Apple Maps lookup supports continuous drawings from 15 m to 2.4 km.
 
-On iOS, `StrokeDrawingView` captures finger input. Convert each touch point on your `MKMapView` to a package coordinate with `Coordinate(map.convert(point, toCoordinateFrom: drawingView))`. To display a returned section, use its coordinates’ `mapCoordinate` values to create an `MKPolyline`.
+On iOS, `StrokeDrawingView` captures finger input. Convert each touch point on your `MKMapView` to a package coordinate with `Coordinate(map.convert(point, toCoordinateFrom: drawingView))`. To display a returned section on an `MKMapView`, add `section.polyline` as an overlay.
 
 ## Testing
 

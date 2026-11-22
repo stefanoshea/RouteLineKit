@@ -1,7 +1,7 @@
 import Foundation
 
 /// An ordered polyline on the supplied graph and the evidence supporting the match.
-public struct Match: Sendable, Equatable {
+public struct Match: Sendable, Hashable {
     /// Projected endpoints and intermediate points along the traversed edges.
     public let coordinates: [Coordinate]
     /// Estimated distance in the local projection.
@@ -10,6 +10,18 @@ public struct Match: Sendable, Equatable {
     public let distanceMetersByWayID: [Int64: Double]
     /// Root-mean-square distance between resampled stroke points and selected graph projections.
     public let rmsOffsetMeters: Double
+
+    public init(
+        coordinates: [Coordinate],
+        distanceMeters: Double,
+        distanceMetersByWayID: [Int64: Double],
+        rmsOffsetMeters: Double
+    ) {
+        self.coordinates = coordinates
+        self.distanceMeters = distanceMeters
+        self.distanceMetersByWayID = distanceMetersByWayID
+        self.rmsOffsetMeters = rmsOffsetMeters
+    }
 }
 
 /// Matches one local stroke to caller-supplied, bidirectional graph geometry.
@@ -19,6 +31,9 @@ public struct StrokeMatcher: Sendable {
 
     private let nodes: [Int64: Coordinate]
     private let ways: [Way]
+
+    /// Indicates whether the matcher contains no valid ways (including when duplicate IDs invalidated input).
+    public var isEmpty: Bool { ways.isEmpty }
 
     /// Duplicate node or way IDs invalidate this matcher. Missing and invalid node coordinates
     /// leave gaps in their ways. Those gaps cannot be traversed.
@@ -31,8 +46,13 @@ public struct StrokeMatcher: Sendable {
                 return
             }
         }
+        guard Set(ways.map(\.id)).count == ways.count else {
+            self.nodes = [:]
+            self.ways = []
+            return
+        }
         self.nodes = coordinates
-        self.ways = Set(ways.map(\.id)).count == ways.count ? ways.sorted { $0.id < $1.id } : []
+        self.ways = ways.sorted { $0.id < $1.id }
     }
 
     /// Returns a connected match or nil for an invalid or weakly supported stroke.
@@ -59,7 +79,11 @@ public struct StrokeMatcher: Sendable {
     /// Road matching accepts drawings from 8 m to 12 km, with up to 12,000 observations and
     /// latitudes within ±85°. Drawings outside these limits fall back to freehand portions.
     public func resolve(_ stroke: [Coordinate]) -> ResolvedStroke {
-        StrokeResolution(nodes: nodes, ways: ways).resolve(stroke)
+        resolve(stroke, shouldCancel: { false })
+    }
+
+    func resolve(_ stroke: [Coordinate], shouldCancel: () -> Bool) -> ResolvedStroke {
+        StrokeResolution(nodes: nodes, ways: ways).resolve(stroke, shouldCancel: shouldCancel)
     }
 
     static func resample(_ points: [Point], preservingReversals: Bool = false) -> [Point]? {

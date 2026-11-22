@@ -92,8 +92,7 @@ struct PlannerMap: UIViewRepresentable {
             coordinator.styles.removeAll()
             if let route {
                 let overlays = route.segments.map { segment in
-                    let coordinates = segment.coordinates.map(\.mapCoordinate)
-                    let line = MKPolyline(coordinates: coordinates, count: coordinates.count)
+                    let line = segment.polyline
                     coordinator.styles[ObjectIdentifier(line)] = RouteStyle(kind: segment.kind)
                     return line
                 }

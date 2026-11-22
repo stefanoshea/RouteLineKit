@@ -1,7 +1,7 @@
 import Foundation
 
 /// A WGS84 coordinate in degrees. The matcher validates input before using it.
-public struct Coordinate: Sendable, Equatable {
+public struct Coordinate: Sendable, Hashable {
     public let latitude: Double
     public let longitude: Double
 
@@ -17,7 +17,7 @@ public struct Coordinate: Sendable, Equatable {
 }
 
 /// A graph vertex. Ways connect only when they share a node ID.
-public struct Node: Sendable, Equatable {
+public struct Node: Sendable, Hashable {
     public let id: Int64
     public let coordinate: Coordinate
 
@@ -28,7 +28,7 @@ public struct Node: Sendable, Equatable {
 }
 
 /// Consecutive node IDs describe bidirectional edges in this matcher.
-public struct Way: Sendable, Equatable {
+public struct Way: Sendable, Hashable {
     public let id: Int64
     public let nodeIDs: [Int64]
 

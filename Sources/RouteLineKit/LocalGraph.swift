@@ -5,7 +5,12 @@ struct LocalGraph {
     private static let maximumEndpointOffset = 12.0
     private static let maximumCorroboratedEndpointOffset = 18.0
     private static let maximumTurnOffset = 10.0
+    private static let gridCellSize = 32.0
 
+    private struct Cell: Hashable {
+        let x: Int
+        let y: Int
+    }
     private struct Segment {
         let way: Int64
         let a: Int64
@@ -30,6 +35,66 @@ struct LocalGraph {
         let way: Int64
         let end: Point
         let length: Double
+    }
+    private struct ShortestPaths {
+        let distances: [Int64: Double]
+        let parents: [Int64: (previous: Int64, edge: Int)]
+
+        func steps(to target: Int64, segments: [Segment], nodes: [Int64: Point]) -> [Step] {
+            var steps: [Step] = []
+            var current = target
+            while let parent = parents[current] {
+                let segment = segments[parent.edge]
+                guard let end = nodes[current] else { break }
+                steps.append(.init(segment: parent.edge, way: segment.way, end: end, length: segment.length))
+                current = parent.previous
+            }
+            return steps.reversed()
+        }
+    }
+    private struct MinHeap {
+        struct Entry {
+            let length: Double
+            let node: Int64
+        }
+
+        private var storage: [Entry] = []
+
+        mutating func push(_ entry: Entry) {
+            storage.append(entry)
+            var index = storage.count - 1
+            while index > 0 {
+                let parent = (index - 1) / 2
+                guard isHigherPriority(storage[index], than: storage[parent]) else { break }
+                storage.swapAt(index, parent)
+                index = parent
+            }
+        }
+
+        mutating func popMin() -> Entry? {
+            guard !storage.isEmpty else { return nil }
+            if storage.count == 1 { return storage.removeLast() }
+            let minimum = storage[0]
+            storage[0] = storage.removeLast()
+            var index = 0
+            while true {
+                let left = 2 * index + 1
+                guard left < storage.count else { break }
+                let right = left + 1
+                var best = left
+                if right < storage.count, isHigherPriority(storage[right], than: storage[left]) {
+                    best = right
+                }
+                guard isHigherPriority(storage[best], than: storage[index]) else { break }
+                storage.swapAt(index, best)
+                index = best
+            }
+            return minimum
+        }
+
+        private func isHigherPriority(_ lhs: Entry, than rhs: Entry) -> Bool {
+            lhs.length == rhs.length ? lhs.node < rhs.node : lhs.length < rhs.length
+        }
     }
     struct Anchor {
         let way: Int64
@@ -56,31 +121,83 @@ struct LocalGraph {
     private let nodes: [Int64: Point]
     private let segments: [Segment]
     private let adjacency: [Int64: [Int]]
+    private let grid: [Cell: [Int]]
+    private let longSegments: [Int]
 
     init(nodes: [Int64: Coordinate], ways: [Way], projection: LocalProjection, stroke: [Point]) {
+        let projectedNodes = nodes.filter { $0.value.isValid }.mapValues(projection.project)
+        self.init(projectedNodes: projectedNodes, ways: ways, stroke: stroke)
+    }
+
+    init(projectedNodes: [Int64: Point], ways: [Way], stroke: [Point]) {
         let minX = (stroke.map(\.x).min() ?? 0) - 64
         let maxX = (stroke.map(\.x).max() ?? 0) + 64
         let minY = (stroke.map(\.y).min() ?? 0) - 64
         let maxY = (stroke.map(\.y).max() ?? 0) + 64
-        let positions = nodes.filter { $0.value.isValid }.mapValues(projection.project)
+        var usedNodes: [Int64: Point] = [:]
         var segments: [Segment] = []
         var adjacency: [Int64: [Int]] = [:]
+        var grid: [Cell: [Int]] = [:]
+        var longSegments: [Int] = []
         for way in ways {
             for (a, b) in zip(way.nodeIDs, way.nodeIDs.dropFirst()) {
-                guard let start = positions[a], let end = positions[b],
+                guard let start = projectedNodes[a], let end = projectedNodes[b],
                     max(start.x, end.x) >= minX, min(start.x, end.x) <= maxX,
                     max(start.y, end.y) >= minY, min(start.y, end.y) <= maxY
                 else { continue }
                 let length = (end - start).length
                 guard (0.01...10_000).contains(length) else { continue }
-                adjacency[a, default: []].append(segments.count)
-                adjacency[b, default: []].append(segments.count)
+                let segmentIndex = segments.count
+                usedNodes[a] = start
+                usedNodes[b] = end
+                adjacency[a, default: []].append(segmentIndex)
+                adjacency[b, default: []].append(segmentIndex)
                 segments.append(.init(way: way.id, a: a, b: b, start: start, end: end, length: length))
+
+                let minCX = Int(floor(min(start.x, end.x) / Self.gridCellSize))
+                let maxCX = Int(floor(max(start.x, end.x) / Self.gridCellSize))
+                let minCY = Int(floor(min(start.y, end.y) / Self.gridCellSize))
+                let maxCY = Int(floor(max(start.y, end.y) / Self.gridCellSize))
+                let spanX = maxCX - minCX + 1
+                let spanY = maxCY - minCY + 1
+                if spanX <= 64, spanY <= 64, spanX * spanY <= 64 {
+                    for cx in minCX...maxCX {
+                        for cy in minCY...maxCY {
+                            grid[Cell(x: cx, y: cy), default: []].append(segmentIndex)
+                        }
+                    }
+                } else {
+                    longSegments.append(segmentIndex)
+                }
             }
         }
-        self.nodes = positions
+        self.nodes = usedNodes
         self.segments = segments
         self.adjacency = adjacency
+        self.grid = grid
+        self.longSegments = longSegments
+    }
+
+    private func nearbySegments(near point: Point, radius: Double) -> [Int] {
+        let minCX = Int(floor((point.x - radius) / Self.gridCellSize))
+        let maxCX = Int(floor((point.x + radius) / Self.gridCellSize))
+        let minCY = Int(floor((point.y - radius) / Self.gridCellSize))
+        let maxCY = Int(floor((point.y + radius) / Self.gridCellSize))
+        var seen = Set<Int>()
+        var result: [Int] = []
+        for cx in minCX...maxCX {
+            for cy in minCY...maxCY {
+                if let bucket = grid[Cell(x: cx, y: cy)] {
+                    for index in bucket where seen.insert(index).inserted {
+                        result.append(index)
+                    }
+                }
+            }
+        }
+        for index in longSegments where seen.insert(index).inserted {
+            result.append(index)
+        }
+        return result
     }
 
     // The partial matcher uses this only to locate stretches worth testing with the full graph search.
@@ -89,7 +206,8 @@ struct LocalGraph {
         let length = motion.length
         guard length > 0 else { return false }
         let midpoint = (start + end) * 0.5
-        return segments.contains { segment in
+        return nearbySegments(near: midpoint, radius: Self.maximumOffset).contains { segmentIndex in
+            let segment = segments[segmentIndex]
             let direction = segment.end - segment.start
             guard abs(motion.dot(direction)) >= 0.8 * length * segment.length else { return false }
             let projected = midpoint.projection(from: segment.start, to: segment.end).point
@@ -137,7 +255,10 @@ struct LocalGraph {
             var links: [(index: Int, walk: Walk)?] = []
             let limit = max(38, gap * 3)
             let endpoints = Set(previous.flatMap { [segments[$0.segment].a, segments[$0.segment].b] })
-            let paths = Dictionary(uniqueKeysWithValues: endpoints.map { ($0, walks(from: $0, limit: limit)) })
+            let destinations = Set(layers[index].flatMap { [segments[$0.segment].a, segments[$0.segment].b] })
+            let paths = Dictionary(uniqueKeysWithValues: endpoints.map { start in
+                (start, walks(from: start, limit: limit, stoppingAfter: destinations))
+            })
             for candidate in layers[index] {
                 var bestScore = Double.infinity
                 var best: (Int, Walk)?
@@ -292,7 +413,7 @@ struct LocalGraph {
         let allowedLength = max(0.1, observedLength * 0.76 - 4)...limit
         let edge = segments[first.segment]
         let endpoints = Set([edge.a, edge.b])
-        func paths(excluding segment: Int? = nil) -> [Int64: [Int64: Walk]] {
+        func paths(excluding segment: Int? = nil) -> [Int64: ShortestPaths] {
             Dictionary(
                 uniqueKeysWithValues: endpoints.map {
                     ($0, walks(from: $0, limit: limit, nodeLimit: 1_500, excluding: segment))
@@ -402,7 +523,8 @@ struct LocalGraph {
                 covered += lengths[edge]
                 edge += 1
             }
-            sampled.append(edges[edge].start + edges[edge].delta * ((distance - covered) / lengths[edge]))
+            let fraction = min(1, max(0, (distance - covered) / lengths[edge]))
+            sampled.append(edges[edge].start + edges[edge].delta * fraction)
         }
         sampled.append(last)
         return sampled
@@ -548,9 +670,11 @@ struct LocalGraph {
                 var error = 0.0
                 for index in probes {
                     let at = stroke[index] + delta
-                    let nearest = segments.reduce(256.0) { best, edge in
+                    var nearest = 256.0
+                    for segmentIndex in nearbySegments(near: at, radius: 16.0) {
+                        let edge = segments[segmentIndex]
                         let offset = at - at.projection(from: edge.start, to: edge.end).point
-                        return min(best, offset.dot(offset))
+                        nearest = min(nearest, offset.dot(offset))
                     }
                     error += nearest * (turns.contains(index) ? 2 : 1)
                 }
@@ -567,7 +691,10 @@ struct LocalGraph {
         for delta in shortList {
             guard let candidate = match(turnSamples.map { $0 + delta }, observations: observations.map { $0 + delta }),
                 candidate.rmsOffset <= 4.5,
-                candidate.distanceByWayID.keys != baseline?.distanceByWayID.keys
+                baseline.map({
+                    candidate.distanceByWayID.keys != $0.distanceByWayID.keys
+                        || Self.divergesMaterially(candidate.points, from: $0.points)
+                }) ?? true
             else { continue }
             let adjustedScore = candidate.rmsOffset + delta.length * 0.23
             if adjustedScore < score {
@@ -607,7 +734,8 @@ struct LocalGraph {
         -> [Candidate]
     {
         var matches: [Candidate] = []
-        for (index, segment) in segments.enumerated() {
+        for index in nearbySegments(near: point, radius: radius) {
+            let segment = segments[index]
             let delta = segment.end - segment.start
             let (projected, fraction) = point.projection(from: segment.start, to: segment.end)
             let distance = (point - projected).length
@@ -626,60 +754,78 @@ struct LocalGraph {
             }.prefix(8))
     }
 
-    private func walks(from start: Int64, limit: Double, nodeLimit: Int = .max, excluding: Int? = nil) -> [Int64: Walk]
+    private func walks(
+        from start: Int64, limit: Double, stoppingAfter destinations: Set<Int64> = [],
+        nodeLimit: Int = .max, excluding: Int? = nil
+    ) -> ShortestPaths
     {
-        var frontier = [start: Walk(length: 0, steps: [])]
-        var result: [Int64: Walk] = [:]
-        while result.count < nodeLimit,
-            let (node, walk) = frontier.min(by: {
-                $0.value.length == $1.value.length ? $0.key < $1.key : $0.value.length < $1.value.length
-            })
-        {
-            frontier.removeValue(forKey: node)
-            result[node] = walk
-            for edge in adjacency[node, default: []] where edge != excluding {
+        var bestDistance: [Int64: Double] = [start: 0]
+        var settledDistances: [Int64: Double] = [:]
+        var parents: [Int64: (previous: Int64, edge: Int)] = [:]
+        var destinationsRemaining = destinations.count
+        var heap = MinHeap()
+        heap.push(.init(length: 0, node: start))
+        while settledDistances.count < nodeLimit, let entry = heap.popMin() {
+            guard settledDistances[entry.node] == nil, bestDistance[entry.node] == entry.length else { continue }
+            settledDistances[entry.node] = entry.length
+            if destinations.contains(entry.node) {
+                destinationsRemaining -= 1
+                if destinationsRemaining == 0 { break }
+            }
+            for edge in adjacency[entry.node, default: []] where edge != excluding {
                 let segment = segments[edge]
-                let next = segment.a == node ? segment.b : segment.a
-                guard result[next] == nil, let end = nodes[next] else { continue }
-                let length = walk.length + segment.length
-                guard length <= limit, length < frontier[next, default: .init(length: .infinity, steps: [])].length
-                else { continue }
-                frontier[next] = Walk(
-                    length: length,
-                    steps: walk.steps + [
-                        .init(segment: edge, way: segment.way, end: end, length: segment.length)
-                    ])
+                let next = segment.a == entry.node ? segment.b : segment.a
+                guard settledDistances[next] == nil, nodes[next] != nil else { continue }
+                let length = entry.length + segment.length
+                guard length <= limit, length < (bestDistance[next] ?? .infinity) else { continue }
+                bestDistance[next] = length
+                parents[next] = (entry.node, edge)
+                heap.push(.init(length: length, node: next))
             }
         }
-        return result
+        return ShortestPaths(distances: settledDistances, parents: parents)
     }
 
     private func transition(
-        from source: Candidate, to target: Candidate, paths: [Int64: [Int64: Walk]], excluding: Int? = nil
+        from source: Candidate, to target: Candidate, paths: [Int64: ShortestPaths], excluding: Int? = nil
     ) -> Walk? {
         let a = segments[source.segment]
         let b = segments[target.segment]
-        var best: Walk?
+        var bestLength = Double.infinity
+        var bestDirect: Walk?
         if source.segment == target.segment && source.segment != excluding {
             let length = abs(source.fraction - target.fraction) * a.length
-            best = Walk(
+            bestLength = length
+            bestDirect = Walk(
                 length: length, steps: [.init(segment: source.segment, way: a.way, end: target.point, length: length)])
         }
+        var bestEndpoints: (
+            start: Int64, point: Point, departure: Double,
+            end: Int64, arrival: Double, middle: ShortestPaths
+        )?
         let starts = [(a.a, a.start, source.fraction * a.length), (a.b, a.end, (1 - source.fraction) * a.length)]
         let ends = [(b.a, target.fraction * b.length), (b.b, (1 - target.fraction) * b.length)]
         for (start, point, departure) in starts {
+            guard let table = paths[start] else { continue }
             for (end, arrival) in ends {
-                guard let middle = paths[start]?[end] else { continue }
-                let length = departure + middle.length + arrival
-                if length < (best?.length ?? .infinity) {
-                    best = Walk(
-                        length: length,
-                        steps: [.init(segment: source.segment, way: a.way, end: point, length: departure)]
-                            + middle.steps
-                            + [.init(segment: target.segment, way: b.way, end: target.point, length: arrival)])
+                guard let middleLength = table.distances[end] else { continue }
+                let length = departure + middleLength + arrival
+                if length < bestLength {
+                    bestLength = length
+                    bestEndpoints = (start, point, departure, end, arrival, table)
                 }
             }
         }
-        return best
+        if let bestEndpoints {
+            let middleSteps = bestEndpoints.middle.steps(to: bestEndpoints.end, segments: segments, nodes: nodes)
+            return Walk(
+                length: bestLength,
+                steps: [
+                    .init(segment: source.segment, way: a.way, end: bestEndpoints.point, length: bestEndpoints.departure)
+                ]
+                    + middleSteps
+                    + [.init(segment: target.segment, way: b.way, end: target.point, length: bestEndpoints.arrival)])
+        }
+        return bestDirect
     }
 }
